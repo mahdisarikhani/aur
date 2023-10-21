@@ -7,7 +7,6 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -31,19 +30,19 @@ var devel = false
 var noedit = false
 
 type Package struct {
-	Description string
-	Name        string
-	NumVotes    int
-	OutOfDate   int64
-	PackageBase string
-	Popularity  float64
-	Version     string
+	Description string  `json:"Description"`
+	Name        string  `json:"Name"`
+	NumVotes    int     `json:"NumVotes"`
+	OutOfDate   int64   `json:"OutOfDate"`
+	PackageBase string  `json:"PackageBase"`
+	Popularity  float64 `json:"Popularity"`
+	Version     string  `json:"Version"`
 	OldVersion  string
 }
 
 type Result struct {
-	ResultCount int
-	Results     []Package
+	ResultCount int       `json:"resultcount"`
+	Results     []Package `json:"results"`
 }
 
 func get(u *url.URL) []Package {
@@ -51,12 +50,8 @@ func get(u *url.URL) []Package {
 	if err != nil {
 		log.Fatal(err)
 	}
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
-	result := new(Result)
-	if err := json.Unmarshal(body, &result); err != nil {
+	var result Result
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
 		log.Fatal(err)
 	}
 	return result.Results
@@ -146,7 +141,7 @@ func prepare(names []string) []Package {
 		}
 		if len(set) > 0 {
 			p := ""
-			for s, _ := range set {
+			for s := range set {
 				p += " " + s
 			}
 			log.Fatal("target not found:" + p)
@@ -259,7 +254,7 @@ func sync(names []string) {
 	for _, p := range outdated {
 		bases[p.PackageBase] = struct{}{}
 	}
-	for base, _ := range bases {
+	for base := range bases {
 		fmt.Printf("\033[1;34m::\033[39m Syncing: %s\n", base)
 		src := path.Join(pkgdest, base)
 		if _, err := os.Stat(src); err != nil {
@@ -298,7 +293,7 @@ func update() {
 	for _, p := range outdated {
 		bases[p.PackageBase] = struct{}{}
 	}
-	for base, _ := range bases {
+	for base := range bases {
 		fmt.Printf("\033[1;34m::\033[39m Updating: %s\n", base)
 		src := path.Join(pkgdest, base)
 		cmd := git(src, "fetch", "--quiet")
