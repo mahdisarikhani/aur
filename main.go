@@ -31,6 +31,7 @@ var noedit = false
 
 type Package struct {
 	Description string  `json:"Description"`
+	Maintainer  string  `json:"Maintainer"`
 	Name        string  `json:"Name"`
 	NumVotes    int     `json:"NumVotes"`
 	OutOfDate   int64   `json:"OutOfDate"`
@@ -152,6 +153,11 @@ func prepare(names []string) []Package {
 			t := time.Unix(r.OutOfDate, 0)
 			fmt.Printf("\033[1;33m==> WARNING:\033[39m %s is flagged out of date (%s)\033[0m\n", r.Name, t.Format(time.DateOnly))
 		}
+		if r.Maintainer == "" {
+			fmt.Printf("\033[1;33m==> WARNING:\033[39m %s is orphan\033[0m\n", r.Name)
+		}
+	}
+	for _, r := range res {
 		pkg := C.alpm_db_get_pkg(db, C.CString(r.Name))
 		if pkg != nil {
 			if devel && strings.HasSuffix(r.Name, "-git") {
