@@ -327,9 +327,49 @@ func update() {
 	}
 }
 
+func clean() {
+	filenames := make(map[string]struct{})
+	cache := C.alpm_db_get_pkgcache(db)
+	for cache != nil {
+		pkg := (*C.alpm_pkg_t)(cache.data)
+		base := C.GoString(C.alpm_pkg_get_base(pkg))
+		filename := C.GoString(C.alpm_pkg_get_filename(pkg))
+		filenames[base] = struct{}{}
+		filenames[filename] = struct{}{}
+		cache = cache.next
+	}
+	files, err := os.ReadDir(pkgdest)
+	if err != nil {
+		log.Fatal(err)
+	}
+	garbage := []string{}
+	fmt.Println("removing old packages from cache...")
+	for _, file := range files {
+		name := file.Name()
+		if _, ok := filenames[name]; ok || strings.HasPrefix(name, dbname+".") {
+			if file.IsDir() {
+				src := path.Join(pkgdest, name)
+				cmd := git(src, "clean", "-dfx")
+				if err := cmd.Run(); err != nil {
+					log.Fatal(err)
+				}
+			}
+		} else {
+			garbage = append(garbage, name)
+		}
+	}
+	fmt.Println("removing unsynced packages...")
+	for _, name := range garbage {
+		if err := os.RemoveAll(path.Join(pkgdest, name)); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
 func usage() {
 	fmt.Println(`usage: aur <operation>
 operations:
+    clean
     remove [package(s)]
     search [string]
     sync   [options] [package(s)]
@@ -370,6 +410,8 @@ func parser() (string, []string) {
 func main() {
 	op, args := parser()
 	switch op {
+	case "clean":
+		clean()
 	case "remove":
 		remove(args)
 	case "search":
