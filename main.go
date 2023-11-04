@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -22,8 +22,8 @@ import (
 var dbname = "aur"
 var handle = C.alpm_initialize(C.CString("/"), C.CString("/var/lib/pacman/"), nil)
 var db = C.alpm_register_syncdb(handle, C.CString(dbname), 0)
-var pkgdest = path.Join(os.Getenv("HOME"), ".cache", dbname)
-var dbpath = path.Join(pkgdest, dbname+".db.tar.gz")
+var pkgdest = filepath.Join(os.Getenv("HOME"), ".cache", dbname)
+var dbpath = filepath.Join(pkgdest, dbname+".db.tar.gz")
 var re = regexp.MustCompile(`.*/(.*)-(.*?-.*?)-.*?\.pkg\.tar\.zst`)
 var force = false
 var devel = false
@@ -64,9 +64,7 @@ func fetch(names []string) []Package {
 	if err != nil {
 		log.Fatal(err)
 	}
-	q := u.Query()
-	q["arg[]"] = names
-	u.RawQuery = q.Encode()
+	u.RawQuery = url.Values{"arg[]": names}.Encode()
 	return get(u)
 }
 
@@ -86,28 +84,27 @@ func search(str string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	u = u.JoinPath(str)
-	res := get(u)
-	sort.Slice(res, func(i, j int) bool {
-		if res[i].Popularity == res[j].Popularity {
-			return res[i].NumVotes < res[j].NumVotes
+	pkgs := get(u.JoinPath(str))
+	sort.Slice(pkgs, func(i, j int) bool {
+		if pkgs[i].Popularity == pkgs[j].Popularity {
+			return pkgs[i].NumVotes < pkgs[j].NumVotes
 		}
-		return res[i].Popularity < res[j].Popularity
+		return pkgs[i].Popularity < pkgs[j].Popularity
 	})
-	for _, r := range res {
-		fmt.Printf("\033[1;35maur/\033[39m%s \033[32m%s\033[39m \033[36m[%d %f]\033[0m", r.Name, r.Version, r.NumVotes, r.Popularity)
-		if r.OutOfDate > 0 {
-			t := time.Unix(r.OutOfDate, 0)
-			fmt.Printf(" \033[31m%s\033[39m", t.Format(time.DateOnly))
+	for _, p := range pkgs {
+		fmt.Printf("\033[1;35maur/\033[39m%s \033[32m%s\033[39m \033[36m[%d %f]\033[0m", p.Name, p.Version, p.NumVotes, p.Popularity)
+		if p.OutOfDate > 0 {
+			date := time.Unix(p.OutOfDate, 0).Format(time.DateOnly)
+			fmt.Printf(" \033[31m%s\033[39m", date)
 		}
-		fmt.Println("\n   ", r.Description)
+		fmt.Println("\n   ", p.Description)
 	}
 }
 
 func makepkg(base string, arg ...string) *exec.Cmd {
 	cmd := exec.Command("makepkg", arg...)
 	cmd.Env = append(cmd.Environ(), "PKGDEST="+pkgdest, "BUILDDIR="+os.TempDir())
-	cmd.Dir = path.Join(pkgdest, base)
+	cmd.Dir = filepath.Join(pkgdest, base)
 	return cmd
 }
 
@@ -122,51 +119,51 @@ func VCSVersion(base string) map[string]string {
 		log.Fatal(err)
 	}
 	version := make(map[string]string)
-	for _, o := range strings.Split(string(output), " ") {
-		match := re.FindStringSubmatch(o)
+	for _, str := range strings.Split(string(output), " ") {
+		match := re.FindStringSubmatch(str)
 		version[match[1]] = match[2]
 	}
 	return version
 }
 
 func prepare(names []string) []Package {
+	pkgs := fetch(names)
+	if len(names) != len(pkgs) {
+		nfs := make(map[string]struct{})
+		for _, name := range names {
+			nfs[name] = struct{}{}
+		}
+		for _, p := range pkgs {
+			delete(nfs, p.Name)
+		}
+		if len(nfs) > 0 {
+			str := []string{}
+			for n := range nfs {
+				str = append(str, n)
+			}
+			log.Fatal("target not found: ", strings.Join(str, " "))
+		}
+	}
+	for _, p := range pkgs {
+		if p.OutOfDate != 0 {
+			date := time.Unix(p.OutOfDate, 0).Format(time.DateOnly)
+			fmt.Printf("\033[1;33m==> WARNING:\033[39m %s is flagged out of date (%s)\033[0m\n", p.Name, date)
+		}
+		if p.Maintainer == "" {
+			fmt.Printf("\033[1;33m==> WARNING:\033[39m %s is orphan\033[0m\n", p.Name)
+		}
+	}
 	outdated := []Package{}
-	res := fetch(names)
-	if len(names) != len(res) {
-		set := make(map[string]struct{})
-		for _, n := range names {
-			set[n] = struct{}{}
-		}
-		for _, r := range res {
-			delete(set, r.Name)
-		}
-		if len(set) > 0 {
-			p := ""
-			for s := range set {
-				p += " " + s
-			}
-			log.Fatal("target not found:" + p)
-		}
-	}
-	for _, r := range res {
-		if r.OutOfDate != 0 {
-			t := time.Unix(r.OutOfDate, 0)
-			fmt.Printf("\033[1;33m==> WARNING:\033[39m %s is flagged out of date (%s)\033[0m\n", r.Name, t.Format(time.DateOnly))
-		}
-		if r.Maintainer == "" {
-			fmt.Printf("\033[1;33m==> WARNING:\033[39m %s is orphan\033[0m\n", r.Name)
-		}
-	}
-	for _, r := range res {
-		pkg := C.alpm_db_get_pkg(db, C.CString(r.Name))
+	for _, p := range pkgs {
+		pkg := C.alpm_db_get_pkg(db, C.CString(p.Name))
 		if pkg != nil {
-			if devel && strings.HasSuffix(r.Name, "-git") {
-				r.Version = VCSVersion(r.PackageBase)[r.Name]
+			if devel && strings.HasSuffix(p.Name, "-git") {
+				p.Version = VCSVersion(p.PackageBase)[p.Name]
 			}
-			r.OldVersion = C.GoString(C.alpm_pkg_get_version(pkg))
+			p.OldVersion = C.GoString(C.alpm_pkg_get_version(pkg))
 		}
-		if force || C.alpm_pkg_vercmp(C.CString(r.Version), C.CString(r.OldVersion)) > 0 {
-			outdated = append(outdated, r)
+		if force || C.alpm_pkg_vercmp(C.CString(p.Version), C.CString(p.OldVersion)) > 0 {
+			outdated = append(outdated, p)
 		}
 	}
 	if len(outdated) > 0 {
@@ -231,18 +228,18 @@ func build(base string) {
 
 func prompt(str string) bool {
 	fmt.Printf("\033[1;34m::\033[39m %s [Y/n]\033[0m ", str)
-	ans := new(string)
-	fmt.Scanln(ans)
-	switch *ans {
+	var ans string
+	fmt.Scanln(&ans)
+	switch ans {
 	case "y", "Y", "":
 		return true
 	}
 	return false
 }
 
-func promptEdit(src string) {
+func editPKGBUILD(src string) {
 	if !noedit && prompt("Edit PKGBUILD?") {
-		cmd := exec.Command("vim", path.Join(src, "PKGBUILD"))
+		cmd := exec.Command("vim", filepath.Join(src, "PKGBUILD"))
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		if err := cmd.Run(); err != nil {
@@ -252,17 +249,17 @@ func promptEdit(src string) {
 }
 
 func sync(names []string) {
-	outdated := prepare(names)
+	pkgs := prepare(names)
 	if !prompt("Proceed with synchronising?") {
 		os.Exit(1)
 	}
 	bases := make(map[string]struct{})
-	for _, p := range outdated {
+	for _, p := range pkgs {
 		bases[p.PackageBase] = struct{}{}
 	}
 	for base := range bases {
 		fmt.Printf("\033[1;34m::\033[39m Syncing: %s\n", base)
-		src := path.Join(pkgdest, base)
+		src := filepath.Join(pkgdest, base)
 		if _, err := os.Stat(src); err != nil {
 			url := "https://aur.archlinux.org/" + base + ".git"
 			cmd := exec.Command("git", "clone", url, src)
@@ -270,7 +267,7 @@ func sync(names []string) {
 				log.Fatal(err)
 			}
 		}
-		promptEdit(src)
+		editPKGBUILD(src)
 		build(base)
 	}
 }
@@ -291,17 +288,17 @@ func update() {
 		names = append(names, name)
 		cache = cache.next
 	}
-	outdated := prepare(names)
+	pkgs := prepare(names)
 	if !prompt("Proceed with updating?") {
 		os.Exit(1)
 	}
 	bases := make(map[string]struct{})
-	for _, p := range outdated {
+	for _, p := range pkgs {
 		bases[p.PackageBase] = struct{}{}
 	}
 	for base := range bases {
 		fmt.Printf("\033[1;34m::\033[39m Updating: %s\n", base)
-		src := path.Join(pkgdest, base)
+		src := filepath.Join(pkgdest, base)
 		cmd := git(src, "fetch", "--quiet")
 		if err := cmd.Run(); err != nil {
 			log.Fatal(err)
@@ -322,7 +319,7 @@ func update() {
 		if err := cmd.Run(); err != nil {
 			log.Fatal(err)
 		}
-		promptEdit(src)
+		editPKGBUILD(src)
 		build(base)
 	}
 }
@@ -348,7 +345,7 @@ func clean() {
 		name := file.Name()
 		if _, ok := filenames[name]; ok || strings.HasPrefix(name, dbname+".") {
 			if file.IsDir() {
-				src := path.Join(pkgdest, name)
+				src := filepath.Join(pkgdest, name)
 				cmd := git(src, "clean", "-dfx")
 				if err := cmd.Run(); err != nil {
 					log.Fatal(err)
@@ -360,7 +357,7 @@ func clean() {
 	}
 	fmt.Println("removing unsynced packages...")
 	for _, name := range garbage {
-		if err := os.RemoveAll(path.Join(pkgdest, name)); err != nil {
+		if err := os.RemoveAll(filepath.Join(pkgdest, name)); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -375,9 +372,9 @@ operations:
     sync   [options] [package(s)]
     update [options]
 options:
-    --devel    check development packages during update
-    --force    always sync packages
-    --noedit  don't edit PKGBUILDs`)
+    --devel   check development packages during update
+    --force   always sync packages
+    --noedit  don't edit PKGBUILD`)
 	os.Exit(0)
 }
 
